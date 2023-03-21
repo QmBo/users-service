@@ -1,0 +1,39 @@
+spring:
+  rabbitmq:
+    host: localhost
+    port: 5672
+  #    stream:
+  #      name:
+
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: telegram.broadcast
+kafka:
+  topic: telegram_messages_dto
+
+rabbit:
+  queue:
+    input:
+      collect: users-service-collect-user
+      subscribe: users-service-subscribe
+      unsubscribe: users-service-unsubscribe
+      statistic: users-service-statistic
+      getAllUsers: users-service-get-all-users
+
+  exchangeTopic: users-service
+  routing:
+    binding:
+      collect: users.collect.#
+      subscribe: users.subscribe.#
+      unsubscribe: users.unsubscribe.#
+      statistic: users.statistic.#
+      getAllUsers: users.getAllUsers.#
+logging:
+  level:
+    org:
+      springframework:
+        amqp: DEBUG
+
+telegram:
+  chat-id: 303775921
