@@ -10,7 +10,8 @@ spring:
     consumer:
       group-id: telegram.broadcast
 kafka:
-  topic: telegram_messages_dto
+  topic:
+    telegram: telegram_messages_dto
 
 rabbit:
   queue:
@@ -20,8 +21,10 @@ rabbit:
       unsubscribe: users-service-unsubscribe
       statistic: users-service-statistic
       getAllUsers: users-service-get-all-users
-
+    output:
+      getAllUsers: users-service-get-all-users-answer
   exchangeTopic: users-service
+  routingKey: users.getAllUsersAnswer.all
   routing:
     binding:
       collect: users.collect.#
@@ -29,11 +32,15 @@ rabbit:
       unsubscribe: users.unsubscribe.#
       statistic: users.statistic.#
       getAllUsers: users.getAllUsers.#
+      getAllUsersAnswer: users.getAllUsersAnswer.#
+
 logging:
   level:
     org:
       springframework:
-        amqp: DEBUG
+#        amqp: DEBUG
 
 telegram:
   chat-id: 303775921
+server:
+  port: 49010

@@ -1,5 +1,6 @@
 package ru.qmbo.usersservice.service;
 
+import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
@@ -13,25 +14,13 @@ import ru.qmbo.usersservice.dto.TelegramMessage;
  * @since 08.12.2022
  */
 @Service
+@RequiredArgsConstructor
 public class KafkaService {
-
-    private final String adminChatId;
-    private final String topic;
+    @Value("${telegram.chat-id}")
+    private String adminChatId;
+    @Value("${kafka.topic.telegram}")
+    private String telegramTopic;
     private final KafkaTemplate<Integer, TelegramMessage> template;
-
-    /**
-     * Instantiates a new Kafka service.
-     *
-     * @param adminChatId the admin chat id
-     * @param topic       kafka topic
-     * @param template    the template
-     */
-    public KafkaService(@Value("${telegram.chat-id}") String adminChatId, @Value("${kafka.topic}")String topic,
-                        KafkaTemplate<Integer, TelegramMessage> template) {
-        this.adminChatId = adminChatId;
-        this.topic = topic;
-        this.template = template;
-    }
 
     /**
      * Send message.
@@ -39,7 +28,7 @@ public class KafkaService {
      * @param message the message
      */
     public void sendMessage(TelegramMessage message) {
-        this.template.send(topic, message);
+        this.template.send(telegramTopic, message);
     }
 
     /**

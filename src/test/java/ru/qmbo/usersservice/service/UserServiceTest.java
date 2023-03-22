@@ -1,6 +1,8 @@
 package ru.qmbo.usersservice.service;
 
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,16 +26,17 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 import ru.qmbo.usersservice.dto.CollectMessage;
+import ru.qmbo.usersservice.dto.StatisticMessage;
 import ru.qmbo.usersservice.dto.SubscribeMessage;
-import ru.qmbo.usersservice.dto.TelegramMessage;
+import ru.qmbo.usersservice.dto.UsersMessage;
 import ru.qmbo.usersservice.model.User;
 import ru.qmbo.usersservice.reposytory.UserRepository;
 
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Optional;
+import java.time.Duration;
+import java.util.*;
+import java.util.stream.Collectors;
 
-import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static ru.qmbo.usersservice.service.UserService.*;
@@ -46,16 +49,14 @@ class UserServiceTest {
     private RabbitTemplate rabbitTemplate;
     @Autowired
     private ConnectionFactory connectionFactory;
-    @MockBean
-    private KafkaService kafkaService;
+    @Autowired
+    private RabbitMQListenerTest rabbitMQListenerTest;
+    @Value("${kafka.topic.telegram}")
+    private String telegramKafkaTopic;
     @MockBean
     private UserRepository userRepository;
     @Captor
     private ArgumentCaptor<User> userArgumentCaptor;
-
-    @Captor
-    private ArgumentCaptor<TelegramMessage> telegramMessageArgumentCaptor;
-
     @Value("${spring.kafka.bootstrap-servers}")
     private String kafkaGroupId;
     private KafkaConsumer<String, String> consumer;
@@ -63,15 +64,12 @@ class UserServiceTest {
     @Container
     public static KafkaContainer kafka = new KafkaContainer(
             DockerImageName.parse("confluentinc/cp-kafka:latest"));
-
     @Container
     public static MongoDBContainer mongoDB = new MongoDBContainer(
             DockerImageName.parse("mongo:4.0.10"));
-
     @Container
     public static RabbitMQContainer mqContainer = new RabbitMQContainer(
             DockerImageName.parse("rabbitmq:3-management-alpine"));
-
 
     @DynamicPropertySource
     public static void properties(DynamicPropertyRegistry registry) {
@@ -79,6 +77,7 @@ class UserServiceTest {
         registry.add("spring.rabbitmq.host", mqContainer::getHost);
         registry.add("spring.rabbitmq.port", mqContainer::getAmqpPort);
         registry.add("spring.kafka.bootstrap-servers", kafka::getBootstrapServers);
+        registry.add("kafka.topic.telegram", () -> "test-topic");
     }
 
     @BeforeEach
@@ -132,7 +131,7 @@ class UserServiceTest {
     }
 
     @Test
-    public void whenSubscribeUserWhenItAlreadySubscribeThenSandKafkaMessage() throws InterruptedException {
+    public void whenSubscribeUserWhenItAlreadySubscribeThenSandKafkaMessage() {
         when(userRepository.findById(112233L))
                 .thenReturn(
                         Optional.of(
@@ -142,14 +141,19 @@ class UserServiceTest {
         rabbitTemplate.convertAndSend("users-service", "users.subscribe.one",
                 new SubscribeMessage().setChatId(112233L)
         );
-        Thread.sleep(500);
-        verify(kafkaService).sendMessage(telegramMessageArgumentCaptor.capture());
-        assertThat(telegramMessageArgumentCaptor.getValue().getMessage()).isEqualTo(YOU_ARE_NOT_SUBSCRIBE);
-        assertThat(telegramMessageArgumentCaptor.getValue().getChatId()).isEqualTo(112233L);
+
+        consumer.subscribe(Collections.singletonList(telegramKafkaTopic));
+        ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000L));
+        consumer.close();
+        List<ConsumerRecord<String, String>> result = new ArrayList<>(100);
+        records.forEach(result::add);
+        List<String> messages = result.stream().map(ConsumerRecord::value).toList();
+
+        assertThat(messages).contains("{\"chatId\":112233,\"message\":\"%s\"}".formatted(YOU_ARE_NOT_SUBSCRIBE));
     }
 
     @Test
-    public void whenSubscribeUserWhenItNotSubscribeThenSandKafkaMessage() throws InterruptedException {
+    public void whenSubscribeUserWhenItNotSubscribeThenSandKafkaMessage() {
         when(userRepository.findById(112233L)).thenReturn(
                 Optional.of(
                         new User().setName("old name").setChatId(112233L)
@@ -158,31 +162,167 @@ class UserServiceTest {
         rabbitTemplate.convertAndSend("users-service", "users.subscribe.one",
                 new SubscribeMessage().setChatId(112233L)
         );
-        Thread.sleep(500);
+
+        consumer.subscribe(Collections.singletonList(telegramKafkaTopic));
+        ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000L));
+        consumer.close();
+        List<ConsumerRecord<String, String>> result = new ArrayList<>(100);
+        records.forEach(result::add);
+        List<String> messages = result.stream().map(ConsumerRecord::value).toList();
         verify(userRepository).save(userArgumentCaptor.capture());
-        verify(kafkaService).sendMessage(telegramMessageArgumentCaptor.capture());
+
         assertThat(userArgumentCaptor.getValue().getName()).isEqualTo("old name");
         assertThat(userArgumentCaptor.getValue().getChatId()).isEqualTo(112233L);
         assertThat(userArgumentCaptor.getValue().getSubscribe()).isEqualTo(TENGE);
-        assertThat(telegramMessageArgumentCaptor.getValue().getMessage()).isEqualTo(YOU_ARE_SUBSCRIBE);
-        assertThat(telegramMessageArgumentCaptor.getValue().getChatId()).isEqualTo(112233L);
+        assertThat(messages).contains("{\"chatId\":112233,\"message\":\"%s\"}".formatted(YOU_ARE_SUBSCRIBE));
     }
 
     @Test
-    public void whenSubscribeNotExistUserThenSandKafkaMessage() throws InterruptedException {
-        when(userRepository.findById(112233L)).thenReturn(
+    public void whenSubscribeNotExistUserThenSandKafkaMessage() {
+        when(userRepository.findById(223344L)).thenReturn(
                 Optional.empty()
         );
         rabbitTemplate.convertAndSend("users-service", "users.subscribe.one",
+                new SubscribeMessage().setChatId(223344L)
+        );
+
+        consumer.subscribe(Collections.singletonList(telegramKafkaTopic));
+        ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000L));
+        consumer.close();
+        List<ConsumerRecord<String, String>> result = new ArrayList<>(100);
+        records.forEach(result::add);
+        List<String> messages = result.stream().map(ConsumerRecord::value).toList();
+        verify(userRepository).save(userArgumentCaptor.capture());
+
+        assertThat(userArgumentCaptor.getValue().getName()).isEqualTo(NONAME);
+        assertThat(userArgumentCaptor.getValue().getChatId()).isEqualTo(223344L);
+        assertThat(userArgumentCaptor.getValue().getSubscribe()).isEqualTo(TENGE);
+        assertThat(messages).contains("{\"chatId\":223344,\"message\":\"%s\"}".formatted(YOU_ARE_SUBSCRIBE));
+    }
+
+
+    @Test
+    public void whenUnsubscribeUserWhenItAlreadyUnsubscribeThenSandKafkaMessage() {
+        when(userRepository.findById(112233L))
+                .thenReturn(
+                        Optional.of(
+                                new User().setName("old name").setChatId(112233L)
+                        )
+                );
+        rabbitTemplate.convertAndSend("users-service", "users.unsubscribe.one",
                 new SubscribeMessage().setChatId(112233L)
         );
-        Thread.sleep(500);
+
+        consumer.subscribe(Collections.singletonList(telegramKafkaTopic));
+        ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000L));
+        consumer.close();
+        List<ConsumerRecord<String, String>> result = new ArrayList<>(100);
+        records.forEach(result::add);
+        List<String> messages = result.stream().map(ConsumerRecord::value).toList();
+
+        assertThat(messages).contains("{\"chatId\":112233,\"message\":\"%s\"}".formatted(YOU_ARE_NOT_UNSUBSCRIBE));
+    }
+
+    @Test
+    public void whenUnsubscribeUserWhenItSubscribeThenSandKafkaMessage() {
+        when(userRepository.findById(112233L)).thenReturn(
+                Optional.of(
+                        new User().setName("old name").setChatId(112233L).setSubscribe("sub")
+                )
+        );
+        rabbitTemplate.convertAndSend("users-service", "users.unsubscribe.one",
+                new SubscribeMessage().setChatId(112233L)
+        );
+
+        consumer.subscribe(Collections.singletonList(telegramKafkaTopic));
+        ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000L));
+        consumer.close();
+        List<ConsumerRecord<String, String>> result = new ArrayList<>(100);
+        records.forEach(result::add);
+        List<String> messages = result.stream().map(ConsumerRecord::value).toList();
         verify(userRepository).save(userArgumentCaptor.capture());
-        verify(kafkaService).sendMessage(telegramMessageArgumentCaptor.capture());
-        assertThat(userArgumentCaptor.getValue().getName()).isEqualTo(NONAME);
+
+        assertThat(userArgumentCaptor.getValue().getName()).isEqualTo("old name");
         assertThat(userArgumentCaptor.getValue().getChatId()).isEqualTo(112233L);
-        assertThat(userArgumentCaptor.getValue().getSubscribe()).isEqualTo(TENGE);
-        assertThat(telegramMessageArgumentCaptor.getValue().getMessage()).isEqualTo(YOU_ARE_SUBSCRIBE);
-        assertThat(telegramMessageArgumentCaptor.getValue().getChatId()).isEqualTo(112233L);
+        assertThat(userArgumentCaptor.getValue().getSubscribe()).isNull();
+        assertThat(messages).contains("{\"chatId\":112233,\"message\":\"%s\"}".formatted(YOU_ARE_UNSUBSCRIBE));
+    }
+
+    @Test
+    public void whenUnsubscribeNotExistUserThenSandKafkaMessage() {
+        when(userRepository.findById(223344L)).thenReturn(
+                Optional.empty()
+        );
+        rabbitTemplate.convertAndSend("users-service", "users.unsubscribe.one",
+                new SubscribeMessage().setChatId(223344L)
+        );
+
+        consumer.subscribe(Collections.singletonList(telegramKafkaTopic));
+        ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000L));
+        consumer.close();
+        List<ConsumerRecord<String, String>> result = new ArrayList<>(100);
+        records.forEach(result::add);
+        List<String> messages = result.stream().map(ConsumerRecord::value).toList();
+
+        assertThat(messages).contains("{\"chatId\":223344,\"message\":\"%s\"}".formatted(YOU_ARE_NOT_UNSUBSCRIBE));
+    }
+
+    @Test
+    public void whenStatisticRequestThenMessageToKafka() {
+        when(userRepository.findAll())
+                .thenReturn(Arrays.asList(new User().setSubscribe(TENGE), new User().setSubscribe(RUB), new User()));
+        rabbitTemplate.convertAndSend("users-service", "users.statistic.one",
+                new StatisticMessage().setChatId(303775921L)
+        );
+        consumer.subscribe(Collections.singletonList(telegramKafkaTopic));
+        ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000L));
+        consumer.close();
+
+        List<ConsumerRecord<String, String>> result = new ArrayList<>(100);
+        records.forEach(result::add);
+        List<String> messages = result.stream().map(ConsumerRecord::value).collect(Collectors.toList());
+
+        assertThat(messages)
+                .contains("{\"chatId\":303775921,\"message\":\"Всего зарегистрировано пользователей: 3\\nИз них подписаны: 2\"}");
+    }
+
+
+    @Test
+    public void whenStatisticRequestAndUsersNotFoundThenMessageToKafka() {
+        when(userRepository.findAll())
+                .thenReturn(Collections.emptyList());
+        rabbitTemplate.convertAndSend("users-service", "users.statistic.one",
+                new StatisticMessage().setChatId(303775921L)
+        );
+        consumer.subscribe(Collections.singletonList(telegramKafkaTopic));
+        ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000L));
+        consumer.close();
+
+        List<ConsumerRecord<String, String>> result = new ArrayList<>(100);
+        records.forEach(result::add);
+        List<String> messages = result.stream().map(ConsumerRecord::value).collect(Collectors.toList());
+
+        assertThat(messages)
+                .contains("{\"chatId\":303775921,\"message\":\"В системе нет пользователей \\uD83E\\uDEE5\"}");
+    }
+
+    @Test
+    public void whenAllUsersRequestThenMessageToKafka() throws Exception {
+        when(userRepository.findAll())
+                .thenReturn(
+                        Arrays.asList(
+                                new User().setChatId(123L),
+                                new User().setChatId(321L),
+                                new User().setChatId(333L)
+                        )
+                );
+        rabbitTemplate.convertAndSend("users-service", "users.getAllUsers.one",
+                new UsersMessage().setId(123456789L)
+        );
+        Thread.sleep(500);
+        final List<UsersMessage> messages = rabbitMQListenerTest.getMessages();
+        Long[] expected = {123L, 321L, 333L};
+        assertThat(messages.get(0).getUsers()).isEqualTo(expected);
+        assertThat(messages.get(0).getId()).isEqualTo(123456789L);
     }
 }

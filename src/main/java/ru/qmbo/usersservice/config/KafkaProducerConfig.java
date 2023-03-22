@@ -58,7 +58,7 @@ public class KafkaProducerConfig {
         props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaServer);
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, IntegerSerializer.class);
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class);
-        props.put(JsonSerializer.TYPE_MAPPINGS, "dto:ru.qmbo.mirexchange.dto.Message");
+        props.put(JsonSerializer.TYPE_MAPPINGS, "dto:ru.qmbo.usersservice.dto.TelegramMessage");
         return props;
     }
 }
